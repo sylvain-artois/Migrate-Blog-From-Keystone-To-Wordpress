@@ -8,6 +8,7 @@ module.exports = new Importer();
  */
 function Importer() {
     this.wp = null;
+    this.cache = [];
 }
 
 /**
@@ -17,8 +18,8 @@ function Importer() {
  */
 Importer.prototype.run = function (url, username, password) {
     console.log('import start');
-    authenticate(url, username, password);
-    test();
+    authenticate.call(this, url, username, password);
+    test.call(this);
 };
 
 /**
@@ -27,6 +28,9 @@ Importer.prototype.run = function (url, username, password) {
  * @param password
  */
 function authenticate(url, username, password) {
+
+    const _this = this;
+
     this.wp = new WPAPI({
         endpoint: url,
         username: username,
@@ -36,7 +40,7 @@ function authenticate(url, username, password) {
             // Only override the transport for the GET method, in this example
             // Transport methods should take a wpreq object and a callback:
             get: function( wpreq, cb ) {
-                let result = cache[ wpreq ];
+                let result = _this.cache[ wpreq ];
                 // If a cache hit is found, return it via the same callback/promise
                 // signature as the default transport method:
                 if ( result ) {
@@ -50,7 +54,7 @@ function authenticate(url, username, password) {
 
                 // Delegate to default transport if no cached data was found
                 return WPAPI.transport.get( wpreq, cb ).then(function( result ) {
-                    cache[ wpreq ] = result;
+                    _this.cache[ wpreq ] = result;
                     return result;
                 });
             }
