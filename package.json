@@ -1,0 +1,12 @@
+{
+  "name": "ImportOldBlog",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "vorpal": "^1.11.4",
+    "wpapi": "^0.11.0"
+  }
+}
