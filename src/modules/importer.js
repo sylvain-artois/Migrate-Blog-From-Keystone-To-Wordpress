@@ -39,7 +39,9 @@ Importer.prototype.run = function(start, nb, done) {
         (categories, cb) => getKeystonePosts(start, nb, categories, cb),
         (detachedPosts, cb) => hydrateTags.call(this, detachedPosts, cb),
         createPost.bind(this),
-        createMedia.bind(this)
+        downloadImage.bind(this),
+        createMedia.bind(this),
+        linkPostMedia.bind(this)
     ], function (err, result) {
         if (err) {
             if (typeof err === "string") {
@@ -208,9 +210,7 @@ function createPost(detachedPosts, cb) {
         return _this.wp.posts().create(detachedPost, function(err, data){
             if (err) {
                 console.error(err);
-                return;
             }
-            console.log(data);
         });
     });
 
@@ -224,9 +224,7 @@ function createPost(detachedPosts, cb) {
     );
 }
 
-function createMedia(persistedPosts, cb) {
-    const _this = this;
-
+function downloadImage(persistedPosts, cb) {
     const downloadImagesP = persistedPosts.map(function (persistedPost) {
         if (Array.isArray(postsImg[persistedPost.slug])) {
             return postsImg[persistedPost.slug].map(function (image){
@@ -250,7 +248,6 @@ function createMedia(persistedPosts, cb) {
                 });
             });
         }
-
         return [];
     }).reduce(function(prev, curr) {
         return prev.concat(curr);
@@ -259,6 +256,60 @@ function createMedia(persistedPosts, cb) {
     Promise.all(downloadImagesP).then(
         function () {
             cb(null, persistedPosts);
+        },
+        function (raison) {
+            cb(raison);
+        }
+    );
+}
+
+function createMedia(persistedPosts, cb) {
+    const _this = this;
+    const persistedPostsRef = persistedPosts;
+    const persistedMediaP = persistedPosts.map(function (persistedPost){
+        return postsImg[persistedPost.slug].map(function (image) {
+            return _this.wp.media()
+                // Specify a path to the file you want to upload
+                .file( image.public_id + "." + image.format )
+                .create({title: image.public_id, description: persistedPost.slug}, function(err, data){
+                    if (err) {
+                        console.error(err);
+                        return;
+                    }
+                });
+        });
+    }).reduce(function(prev, curr) {
+        return prev.concat(curr);
+    });
+
+    Promise.all(persistedMediaP).then(
+        function (media) {
+            cb(null, persistedPostsRef, media);
+        },
+        function (raison) {
+            cb(raison);
+        }
+    );
+}
+
+function linkPostMedia(persistedPosts, media, cb) {
+    const _this = this;
+    const persistedMediaUpdateP = persistedPosts.map(function (persistedPost){
+        return media.filter(medium => medium.description === persistedPost.slug).map(medium => medium.id).map(function(mediumid){
+            return _this.wp.media().id( mediumid ).update({post: persistedPost.id}, function(err, data){
+                if (err) {
+                    console.error(err);
+                    return;
+                }
+            });
+        })
+    }).reduce(function(prev, curr) {
+        return prev.concat(curr);
+    });
+
+    Promise.all(persistedMediaUpdateP).then(
+        function (media) {
+            cb(null);
         },
         function (raison) {
             cb(raison);
