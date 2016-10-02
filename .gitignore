@@ -38,3 +38,6 @@ jspm_packages
 
 #Jetbrains
 .idea
+
+#prevent leak of sensible data
+.env
