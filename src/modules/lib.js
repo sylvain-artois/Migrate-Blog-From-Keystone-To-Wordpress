@@ -7,7 +7,8 @@ module.exports = {
     keystoneToWp: keystoneToWp,
     getStatus: getStatus,
     getTitle: getTitle,
-    getContent: getContent
+    getContent: getContent,
+    getFormat: getFormat
 };
 
 function decodeEntities(str) {
@@ -56,10 +57,12 @@ function getStatus(keystonePostState) {
 function getTitle(post) {
     if (post.type === 'quote') return post.writer;
     if (post.type === 'gallery') return post.captionText;
-    return post.title;
+    return post.title || "";
 }
 
 function getContent(post) {
-    if (post.type === 'quote') return decodeEntities(post.quote);
-    return decodeEntities(post.title);
+    if (post.type === 'quote') return decodeEntities(post.quoteText);
+    if (post.type === 'text') return decodeEntities(post.contentText);
+    return decodeEntities(post.title || "");
 }
+

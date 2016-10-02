@@ -2,16 +2,15 @@
 const WPAPI     = require('wpapi');
 const waterfall = require('async/waterfall');
 const moment    = require('moment');
+const Promise   = require('promise');
 const lib       = require('./lib');
 
-import categories   from './import/data/category';
-import posts        from './import/data/posts';
+const keystoneCategories    = require('../../data/category')();
+const keystonePosts         = require('../../data/posts')();
 
 module.exports = new Importer();
 
-const keystoneCategories = categories();
-const keystonePosts = posts();
-const postsImg = [];
+const postsImg = {};
 
 /**
  * @constructor
@@ -30,17 +29,24 @@ Importer.prototype.auth = function(url, username, password) {
  * @param username
  * @param password
  */
-Importer.prototype.run = function(start, nb) {
-    console.log('import start');
+Importer.prototype.run = function(start, nb, done) {
+    console.log('Importer.run');
 
     waterfall([
-        getCategory,
+        getCategory.bind(this),
         (categories, cb) => getKeystonePosts(start, nb, categories, cb),
-        (detachedPosts, cb) => hydrateTags.bind(this, detachedPosts, cb),
-        createPost
+        (detachedPosts, cb) => hydrateTags.call(this, detachedPosts, cb),
+        createPost.bind(this)
     ], function (err, result) {
-        // result now equals 'done'
-    })
+        if (err) {
+            if (typeof err === "string") {
+                err = new Error(err);
+            }
+            done(err);
+        } else {
+            done(true);
+        }
+    });
 };
 
 /**
@@ -56,7 +62,7 @@ function authenticate(url, username, password) {
         endpoint: url,
         username: username,
         password: password,
-        auth: true,
+        auth: true/*,
         transport: {
             // Only override the transport for the GET method, in this example
             // Transport methods should take a wpreq object and a callback:
@@ -79,7 +85,7 @@ function authenticate(url, username, password) {
                     return result;
                 });
             }
-        }
+        }*/
     });
 }
 
@@ -113,9 +119,11 @@ function getKeystonePosts(start, nb, categories, cb) {
         return cb(new Error("Invalid pager"));
     }
 
-    let detachedPosts = keystonePosts.slice(start, start+nb)
+    const detachedPosts = keystonePosts.slice(start, start+nb)
         .filter(post => post.type !== 'medium')
-        .map(post => hydratePost(post, categories));
+        .map(function (post) {
+            return hydratePost(post, categories);
+        });
 
     if (detachedPosts.length > 0) {
         return cb(null, detachedPosts);
@@ -132,32 +140,70 @@ function getKeystonePosts(start, nb, categories, cb) {
  */
 function hydrateTags(detachedPosts, cb) {
     const _this = this;
-    detachedPosts.map(function(detachedPost) {
-        detachedPost.tags.split(',').map(function (keystoneTag) {
-            _this.wp.tags().create({'name': keystoneTag})
-                .catch(err => console.error(err))
-                .then(function (response) {
-                    console.log(response);
+    const detachedPostsRef = detachedPosts;
 
-                    let tagSet = new Set();
-
-                    for(let i = 0; i < response.length; ++i) {
-                        let tagid = response[i];
-                        if (! tagSet.has(tagid)) {
-                            tagSet.add(tagid);
-                        }
+    detachedPosts.forEach(function(detachedPost) {
+        detachedPost.tagsPromises = detachedPost.tags.split(',').map(function (keystoneTag) {
+            const tags = _this.wp.tags();
+            detachedPost.finalTag = [];
+            return tags.create({'name': keystoneTag}, function(err, data){
+                    if (err) {
+                        detachedPost.finalTag.push(err.response.body.data);
+                        return;
                     }
 
-                    detachedPost.tags = Array.from(tagSet);
+                    detachedPost.tags.push(data);
                 });
+            });
+    });
+
+    const allTagsPromise = detachedPosts.map(function (detachedPostWithTagsPromises) {
+        return detachedPostWithTagsPromises.tagsPromises;
+    }).reduce(function(prev, curr) {
+        return prev.concat(curr);
+    });
+
+    Promise.all(allTagsPromise).then(
+        function () {
+
+            detachedPostsRef.forEach(function (detachedPost) {
+                detachedPost.tags = detachedPost.finalTag.slice(0);
+                delete detachedPost.finalTag;
+                delete detachedPost.tagsPromises;
+            });
+
+            cb(null, detachedPostsRef);
+        },
+        function (raison) {
+            cb(raison);
+        }
+    );
+}
+
+/**
+ * @param detachedPosts
+ * @param cb
+ */
+function createPost(detachedPosts, cb) {
+    const _this = this;
+    const postPromises = detachedPosts.map(function (detachedPost) {
+        return _this.wp.posts().create(detachedPost, function(err, data){
+            if (err) {
+                console.error(err);
+                return;
+            }
+            console.log(data);
         });
     });
 
-    cb(null, detachedPosts);
-}
-
-function createPost() {
-
+    Promise.all(postPromises).then(
+        function () {
+            cb(null, Array.from(arguments));
+        },
+        function (raison) {
+            cb(raison);
+        }
+    );
 }
 
 /**
@@ -167,20 +213,20 @@ function createPost() {
 function hydratePost(post, categories) {
 
     //Hydrated post
-    let detachedPost = {
+    const detachedPost = {
         'date': moment(post.publishedDate.$date).toISOString(),
         'slug': post.slug,
         'status': lib.getStatus(post.state),
         'title': lib.getTitle(post),
         'content': lib.getContent(post),
-        'excerpt': post.brief || "",
+        'excerpt': post.contentText || "",
         'author': 1,
         'comment_status': 'open',
         'ping_status': 'open',
         'format': lib.getFormat(post.type),
         'sticky': post.pinned,
         'categories': null,
-        'tags': null,
+        'tags': post.tags,
         'raw': post
     };
 
@@ -188,15 +234,36 @@ function hydratePost(post, categories) {
     postsImg[detachedPost.slug] = detachedPost.raw.images;
 
     //Store all image under images
-    if (detachedPost.raw.image.public_id) {
+    if (detachedPost.raw.image) {
         postsImg[detachedPost.slug].push(detachedPost.raw.image);
     }
 
     //Convert keystone category to WP
     detachedPost.categories = post.categories
-        .map(category => lib.oIdToCategory.call(null, keystoneCategories, category))
+        .map(category => lib.oIdToCategory(keystoneCategories, category))
         .map(keystoneCategory => lib.keystoneToWp(keystoneCategory, categories))
         .map(wpCategory => wpCategory.id );
 
     return detachedPost;
 }
+
+
+/*
+TypeError: this.transport.post is not a function
+at EndpointRequest.WPRequest.create (c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\wpapi\lib\constructors\wp-request.js:751:24)
+at c:\Users\delta\Documents\Code\ImportOldBlog\src\modules\importer.js:146:29
+at Array.map (native)
+at c:\Users\delta\Documents\Code\ImportOldBlog\src\modules\importer.js:144:66
+at Array.forEach (native)
+at Importer.hydrateTags (c:\Users\delta\Documents\Code\ImportOldBlog\src\modules\importer.js:143:57)
+at Importer.run.waterfall (c:\Users\delta\Documents\Code\ImportOldBlog\src\modules\importer.js:38:44)
+at nextTask (c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\waterfall.js:28:14)
+at c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\waterfall.js:22:13
+at apply (c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\node_modules\lodash\_apply.js:15:25)
+at c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\node_modules\lodash\_overRest.js:32:12
+at c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\internal\onlyOnce.js:12:16
+at getKeystonePosts (c:\Users\delta\Documents\Code\ImportOldBlog\src\modules\importer.js:129:16)
+at Importer.run.waterfall (c:\Users\delta\Documents\Code\ImportOldBlog\src\modules\importer.js:37:29)
+at nextTask (c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\waterfall.js:28:14)
+at c:\Users\delta\Documents\Code\ImportOldBlog\node_modules\async\waterfall.js:22:13
+    */
